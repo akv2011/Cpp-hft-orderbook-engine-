@@ -1,0 +1,63 @@
+[Project Name]
+High-Frequency Order Book Reconstructor
+
+[Version]
+1.0
+
+[Objective]
+To develop a high-performance C++ application that accurately reconstructs a 10-level market-by-price (MBP-10) order book from a stream of market-by-order (MBO) data. The primary success metrics are correctness of the output and the speed of processing.
+
+[Key Features & Requirements]
+
+1.  **MBO Data Ingestion and Parsing**
+    *   The application must accept a single command-line argument: the path to the input `mbo.csv` file.
+    *   It must efficiently parse the CSV data, extracting key fields for each event: `ts_event`, `action`, `side`, `price`, `size`, and `order_id`.
+    *   The initial row of the MBO file (header) must be skipped.
+
+2.  **Core Order Book Logic**
+    *   The system must maintain an internal representation of the limit order book.
+    *   The book should be initialized as empty, effectively ignoring the first data row which is a 'clear[R]' action.
+    *   The book must handle distinct orders, tracking them by `order_id`.
+    *   The book should aggregate orders at the same price level, maintaining total size and order count for that level.
+
+3.  **Event Processing Rules**
+    *   **Add ('A'):** When an 'A' action is received, a new order with the specified `price`, `size`, and `order_id` is added to the corresponding side ('B' for Bid, 'A' for Ask) of the book.
+    *   **Cancel ('C'):** When a 'C' action is received, the order identified by `order_id` must be found and its size reduced by the specified `size`. If the size becomes zero, the order should be removed completely.
+    *   **Special Trade Handling ('T'):**
+        *   This is a composite action that spans multiple MBO rows (typically a `T`, `F`, then `C`). The application should treat this sequence as a single logical trade event.
+        *   The actual modification to the order book occurs only upon processing the `C` (Cancel) part of the sequence.
+        *   The modification (size reduction) must be applied to the **OPPOSITE** side of the book from what is specified in the `C` row. For example, if the `C` row's side is 'A', a Bid order at that price must be reduced.
+        *   For the purpose of the output MBP-10 file, this event must be logged with the action type 'T'.
+    *   **Null Trade ('T' with side 'N'):** If an event has `action = 'T'` and `side = 'N'`, it should be ignored. The order book state must not be changed.
+
+4.  **MBP-10 Snapshot Generation**
+    *   After processing each relevant MBO event, the application must generate a snapshot of the current order book state.
+    *   The snapshot must contain the top 10 price levels for both the Bid and Ask sides.
+    *   For each level `i` from 00 to 09, the snapshot must include:
+        *   `bid_px_i`: Price of the i-th best bid.
+        *   `bid_sz_i`: Total size of all orders at that bid price.
+        *   `bid_ct_i`: Total count of distinct orders at that bid price.
+        *   `ask_px_i`: Price of the i-th best ask.
+        *   `ask_sz_i`: Total size of all orders at that ask price.
+        *   `ask_ct_i`: Total count of distinct orders at that ask price.
+    *   If a level does not exist (e.g., fewer than 10 bid levels), its price, size, and count fields should be empty or zero, matching the format of the sample `mbp.csv`.
+
+5.  **Output Formatting**
+    *   The application must write the generated MBP-10 snapshots to a new CSV file. The name can be `output.csv` or similar.
+    *   The output file's columns and data format must **exactly** match the provided `mbp.csv` sample file to ensure correctness. This includes header, column order, precision of prices, and integer values for sizes/counts.
+
+[Non-Functional Requirements (NFRs)]
+
+1.  **Performance:** The application must be highly optimized for speed. The total execution time for processing the entire `mbo.csv` will be a primary evaluation metric. Low-latency data structures and algorithms are required.
+2.  **Memory Efficiency:** The application should use memory efficiently, avoiding unnecessary allocations or data duplication.
+3.  **Correctness:** The generated output must be 100% identical to the provided `mbp.csv` file when run with the provided `mbo.csv` input.
+4.  **Code Quality:** The C++ code must be clean, well-structured, commented where necessary, and easily understandable.
+5.  **Build System:** A `Makefile` must be provided to compile the source code into an executable binary.
+
+[Deliverables]
+
+1.  All C++ source code files (`.cpp`, `.h`).
+2.  A `Makefile` for building the project.
+3.  The compiled executable binary (e.g., `reconstruction_myname`).
+4.  A `README.txt` file detailing the design choices, optimization strategies, and instructions for building and running the code.
+5.  (Optional but recommended) A suite of unit tests used for verifying correctness and performance.

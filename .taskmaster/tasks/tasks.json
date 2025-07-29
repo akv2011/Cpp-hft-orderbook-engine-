@@ -1,0 +1,142 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Setup Project Structure and Build System",
+        "description": "Initialize the C++ project repository, create a logical directory structure (e.g., src, include, bin, data), and implement a Makefile for compiling the application with performance-oriented flags.",
+        "details": "The Makefile should support standard targets like `all`, `clean`. It must compile the source into an executable binary as specified. Use compiler flags like `-O3`, `-std=c++17`, and `-march=native` to enable aggressive optimizations.",
+        "testStrategy": "Run `make` to confirm successful compilation of a basic `main.cpp`. Run `make clean` to verify object files and the binary are removed. The build process should be simple and reproducible.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "Implement High-Performance MBO CSV Ingestion",
+        "description": "Develop a module to read the `mbo.csv` file specified by a command-line argument. The module must efficiently parse each row into a structured MBO event object, skipping the header row.",
+        "details": "To maximize performance, avoid standard `iostream` and `stringstream` per-line parsing. Implement a custom parser using C-style functions like `strtok_r` or `sscanf`, or use a high-performance third-party library like `fast-cpp-csv-parser`. The parsed data should be stored in a `struct MboEvent` for type safety and clarity.",
+        "testStrategy": "Create a unit test with a sample 10-line CSV file. The test will invoke the parser and assert that the resulting `MboEvent` structs contain the correct values and data types for `ts_event`, `action`, `side`, `price`, `size`, and `order_id`.",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Design and Implement Core Order Book Data Structures",
+        "description": "Define and implement the in-memory data structures to represent the limit order book, optimized for both fast updates and sorted top-of-book queries.",
+        "details": "Use `std::map<Price, LevelData, std::greater<Price>>` for bids and `std::map<Price, LevelData, std::less<Price>>` for asks to maintain price levels in sorted order automatically. `LevelData` will store aggregate size and order count. For fast O(1) average time complexity lookups of individual orders (for cancels), use `std::unordered_map<OrderId, OrderData>`. `OrderData` should store the order's price, size, and an iterator pointing to its level in the corresponding bid/ask map to avoid expensive lookups.",
+        "testStrategy": "Write unit tests to add and remove price levels. Verify that the maps remain sorted, aggregate data (size, count) is correct, and the `unordered_map` correctly tracks individual orders.",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "Implement 'Add' Event Handler",
+        "description": "Implement the logic to process an 'A' (Add) action from the MBO stream, adding a new order to the book and updating the relevant price level.",
+        "details": "The handler will take a parsed `MboEvent`. It will insert the new order into the `unordered_map` of orders. It will then find or create the corresponding price level in the bid/ask `map`, incrementing the level's total size and order count.",
+        "testStrategy": "Unit test by creating an empty book, processing an 'Add' event, and asserting that the book's state (level data, order map) is correct. Test adding to an existing level and creating a new level.",
+        "priority": "high",
+        "dependencies": [
+          2,
+          3
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Implement 'Cancel' Event Handler",
+        "description": "Implement the logic for the 'C' (Cancel) action, which reduces an existing order's size and removes it from the book if its size becomes zero.",
+        "details": "This handler is for standard cancels (not part of a trade). It will look up the `order_id` in the `unordered_map`, retrieve its data (including the iterator to the price level), reduce the size, and update the aggregate size at the price level. If order size becomes zero, remove it from the `unordered_map` and decrement the order count at the price level. If the price level becomes empty (count and size are zero), remove it from the bid/ask `map`.",
+        "testStrategy": "Unit test various scenarios: a partial cancel, a full cancel that removes the order but leaves the price level, and a full cancel that also empties and removes the price level.",
+        "priority": "high",
+        "dependencies": [
+          4
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Implement Special 'Trade' Event Handler",
+        "description": "Implement the logic for 'T' (Trade) events, which are identified by a 'C' action following a 'T' action and modify the book on the OPPOSITE side.",
+        "details": "A state machine or flag is needed in the main loop to track when a 'C' is part of a trade. When a trade-cancel is processed, the handler must look up the price on the opposite side of the book from the 'C' event's side. It must then reduce the size of orders at that price level. A FIFO fill policy is standard: reduce the size of the oldest order(s) at that level. This requires the `LevelData` to contain a queue or list of orders. 'T' events with side 'N' must be ignored.",
+        "testStrategy": "Create a book state with bids and asks. Process a 'T'-'F'-'C' sequence and verify that an order on the correct (opposite) side has its size reduced. Test that a 'T' with side 'N' does not change the book state.",
+        "priority": "high",
+        "dependencies": [
+          5
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Implement MBP-10 Snapshot Generation",
+        "description": "Create a function that queries the current order book state and extracts the top 10 bid and ask levels into a structured snapshot.",
+        "details": "The function will iterate through the first 10 elements of the bid and ask `std::map`s. Since the maps are sorted, this is efficient. It will populate a snapshot struct with all 60 required fields (`bid_px_00`...`ask_ct_09`). If fewer than 10 levels exist on a side, the remaining fields for that side must be populated with zero or empty values to match the output format.",
+        "testStrategy": "Unit test this function with various book states: an empty book, a book with fewer than 10 levels, and a book with more than 10 levels. Assert that the generated snapshot struct is correct in all cases.",
+        "priority": "high",
+        "dependencies": [
+          3
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Implement Formatted Output CSV Writer",
+        "description": "Develop a module to write the generated MBP-10 snapshots to an `output.csv` file, ensuring the format, headers, and data precision exactly match the sample `mbp.csv`.",
+        "details": "Create a function that takes a snapshot struct and writes it as a formatted string to an output file stream. Use a buffered writer (`std::vector<char>` or similar) to batch writes to disk, improving performance. Pay strict attention to column order, header string, price precision, and integer formatting.",
+        "testStrategy": "Write a known snapshot struct to a file and perform a character-by-character comparison with a pre-defined, known-good output string to ensure exact formatting.",
+        "priority": "high",
+        "dependencies": [
+          7
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "Integrate Components in Main Application Loop",
+        "description": "Create the main executable logic that orchestrates all components: command-line argument parsing, file reading, event dispatching, and snapshot generation/writing.",
+        "details": "The `main` function will initialize the order book and CSV reader/writer. It will loop through each MBO record from the input file. It will use a simple state flag to identify if the last seen action was 'T' to correctly handle trade sequences. Inside the loop, it will dispatch to the appropriate event handler ('A', 'C', or 'T'). After each event that modifies the book, it will trigger snapshot generation and writing.",
+        "testStrategy": "Perform integration testing with a small, well-defined `mbo.csv` file (e.g., 20 lines covering all event types). Manually trace the expected state and verify the `output.csv` is 100% correct.",
+        "priority": "high",
+        "dependencies": [
+          2,
+          6,
+          8
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Final Validation, Optimization, and Documentation",
+        "description": "Perform a full run against the provided data to ensure 100% correctness, profile for bottlenecks, apply final optimizations, and write the README.txt.",
+        "details": "Use a file comparison tool (e.g., `diff`) to verify the final `output.csv` is identical to the sample `mbp.csv`. Use a profiler like `gprof` or Valgrind's `callgrind` to identify performance hot spots and optimize. Write the `README.txt` detailing design choices (e.g., data structures), optimization strategies, and clear build/run instructions.",
+        "testStrategy": "The primary success criterion is that `diff output.csv provided_mbp.csv` produces no output. Performance will be measured by running `time ./executable path/to/mbo.csv`.",
+        "priority": "high",
+        "dependencies": [
+          9
+        ],
+        "status": "done",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-07-28T22:12:25.156Z",
+      "updated": "2025-07-29T19:54:49.182Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
