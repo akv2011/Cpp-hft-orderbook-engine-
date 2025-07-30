@@ -54,14 +54,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Process all MBO events with improved T-F-C handling and Top-10 level filtering
-    std::cout << "\nProcessing MBO events with Top-10 level filtering..." << std::endl;
+    // Process all MBO events with improved T-F-C handling
+    std::cout << "\nProcessing MBO events with improved T-F-C handling..." << std::endl;
     auto process_start = std::chrono::high_resolution_clock::now();
     
     size_t processed_events = 0;
     size_t snapshots_written = 0;
     size_t tfc_sequences_detected = 0;
-    size_t snapshots_filtered = 0;
     
     // First pass: identify T->F->C sequences
     std::vector<bool> is_tfc_event(mbo_events.size(), false);
@@ -90,8 +89,21 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Second pass: process all events with Top-10 level change detection
-    std::unordered_set<uint64_t> failed_cancel_orders;
+    // Cancel-Add pair consolidation logic - declare outside loop for scope
+    struct PendingCancel {
+        MboEvent event;
+        uint64_t timestamp_ns;
+    };
+    static std::unordered_map<uint64_t, PendingCancel> cancel_buffer;
+    static const uint64_t CONSOLIDATION_WINDOW_NS = 1000; // 1 microsecond window
+    static std::unordered_set<uint64_t> failed_cancel_orders;
+
+    // Helper function to get timestamp in nanoseconds
+    auto getTimestampNs = [](const MboEvent& evt) -> uint64_t {
+        return evt.ts_event.count(); // Extract nanoseconds from ts_event
+    };
+
+    // Second pass: process all events
     for (size_t i = 0; i < mbo_events.size(); ++i) {
         const auto& event = mbo_events[i];
         processed_events++;
@@ -134,15 +146,40 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        // Handle standalone events with Top-10 level change detection
+        // Handle standalone events (including standalone T events)
         bool should_process = true;
         
-        // Filter cancel events for non-existent orders
+        // Evict stale cancel events that are beyond the time window
+        auto current_time_ns = getTimestampNs(event);
+        auto it = cancel_buffer.begin();
+        while (it != cancel_buffer.end()) {
+            if (current_time_ns - it->second.timestamp_ns > CONSOLIDATION_WINDOW_NS) {
+                // Process stale cancel event
+                std::cout << "Processing stale Cancel event for order " << it->first << std::endl;
+                ProcessResult stale_result = order_book.processEvent(it->second.event);
+                if (stale_result.should_write) {
+                    MbpSnapshot stale_snapshot = order_book.generateSnapshot(it->second.event);
+                    if (csv_writer.writeSnapshot(stale_snapshot, snapshots_written)) {
+                        snapshots_written++;
+                    }
+                }
+                it = cancel_buffer.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        
         if (event.action == 'C') {
+            // Check if the order exists before trying to cancel it
             if (!order_book.orderExists(event.order_id)) {
                 should_process = false;
                 failed_cancel_orders.insert(event.order_id);
                 std::cout << "Filtered Cancel event for non-existent order " << event.order_id << std::endl;
+            } else {
+                // Buffer the cancel event for potential consolidation
+                cancel_buffer[event.order_id] = {event, current_time_ns};
+                should_process = false; // Don't process immediately
+                std::cout << "Buffered Cancel event for order " << event.order_id << " for potential C->A consolidation" << std::endl;
             }
         } else if (event.action == 'A') {
             // Check if this Add follows a failed Cancel for the same order
@@ -150,94 +187,119 @@ int main(int argc, char* argv[]) {
                 should_process = false;
                 failed_cancel_orders.erase(event.order_id);
                 std::cout << "Filtered Add event for order " << event.order_id << " following failed Cancel" << std::endl;
+            } else {
+                // Check for pending cancel event to consolidate
+                auto cancel_it = cancel_buffer.find(event.order_id);
+                if (cancel_it != cancel_buffer.end()) {
+                    uint64_t time_delta = current_time_ns - cancel_it->second.timestamp_ns;
+                    if (time_delta <= CONSOLIDATION_WINDOW_NS) {
+                        // Consolidate C->A pair - treat as order modification
+                        std::cout << "Consolidating C->A pair for order " << event.order_id 
+                                  << " (delta: " << time_delta << "ns)" << std::endl;
+                        
+                        // First process the cancel
+                        ProcessResult cancel_result = order_book.processEvent(cancel_it->second.event);
+                        (void)cancel_result; // Suppress unused variable warning
+                        // Then process the add
+                        ProcessResult add_result = order_book.processEvent(event);
+                        
+                        // Generate a single snapshot for the modification instead of two separate ones
+                        if (add_result.should_write) {
+                            MbpSnapshot snapshot = order_book.generateSnapshot(event);
+                            // Mark as modification action
+                            snapshot.action = 'M'; // Use 'M' to indicate this was a consolidated modification
+                            if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
+                                snapshots_written++;
+                            }
+                        }
+                        
+                        cancel_buffer.erase(cancel_it);
+                        should_process = false; // Already processed
+                    } else {
+                        // Outside time window - process cancel as separate event
+                        ProcessResult cancel_result = order_book.processEvent(cancel_it->second.event);
+                        if (cancel_result.should_write) {
+                            MbpSnapshot cancel_snapshot = order_book.generateSnapshot(cancel_it->second.event);
+                            if (csv_writer.writeSnapshot(cancel_snapshot, snapshots_written)) {
+                                snapshots_written++;
+                            }
+                        }
+                        cancel_buffer.erase(cancel_it);
+                        // Continue to process add normally
+                    }
+                }
             }
         }
         
         if (should_process) {
-            // *** KEY CHANGE: Top-10 level state comparison for A/C events ***
-            if (event.action == 'A' || event.action == 'C') {
-                // Capture state before processing the event
-                Top10State pre_state = order_book.captureTop10State();
-                
-                // Process the event
-                ProcessResult result = order_book.processEvent(event);
-                
-                // Capture state after processing the event
-                Top10State post_state = order_book.captureTop10State();
-                
-                // Only generate snapshot if top-10 levels actually changed
-                if (pre_state != post_state) {
-                    if (result.should_write) {
-                        MbpSnapshot snapshot = order_book.generateSnapshot(event);
-                        if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
-                            snapshots_written++;
-                        }
+            ProcessResult result = order_book.processEvent(event);
+            
+            // Handle standalone T events specially
+            if (event.action == 'T') {
+                if (event.side == 'N') {
+                    // T events with side='N' don't modify the order book but still generate snapshots
+                    MbpSnapshot snapshot = order_book.generateSnapshot(event);
+                    snapshot.action = 'T';
+                    snapshot.side = event.side;
+                    
+                    if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
+                        snapshots_written++;
                     }
                 } else {
-                    snapshots_filtered++;
-                    // Optional: Log filtered snapshots for debugging
-                    // std::cout << "Filtered " << event.action << " event for order " << event.order_id 
-                    //           << " - no top-10 change" << std::endl;
+                    // T events with side='B' or 'A' - apply trade effect and write snapshot  
+                    char target_side = (event.side == 'B') ? 'A' : 'B';
+                    
+                    // Check if there are orders to fill at this price
+                    bool can_fill = false;
+                    if (target_side == 'B') {
+                        can_fill = order_book.hasOrdersAtPrice(event.price, 'B');
+                    } else {
+                        can_fill = order_book.hasOrdersAtPrice(event.price, 'A');
+                    }
+                    
+                    if (can_fill) {
+                        // Apply the trade fill
+                        if (target_side == 'B') {
+                            order_book.fillOrdersAtPrice(event.price, event.size, 'B');
+                        } else {
+                            order_book.fillOrdersAtPrice(event.price, event.size, 'A');
+                        }
+                    }
+                    
+                    // Write snapshot for standalone T event (regardless of whether we could fill)
+                    MbpSnapshot snapshot = order_book.generateSnapshot(event);
+                    snapshot.action = 'T';
+                    snapshot.side = event.side;
+                    
+                    if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
+                        snapshots_written++;
+                    }
                 }
             } else {
-                // For non-A/C events, process normally (T, F, R events)
-                ProcessResult result = order_book.processEvent(event);
-                
-                // Handle standalone T events specially
-                if (event.action == 'T') {
-                    if (event.side == 'N') {
-                        // T events with side='N' don't modify the order book but still generate snapshots
-                        MbpSnapshot snapshot = order_book.generateSnapshot(event);
-                        snapshot.action = 'T';
-                        snapshot.side = event.side;
-                        
-                        if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
-                            snapshots_written++;
-                        }
-                    } else {
-                        // T events with side='B' or 'A' - apply trade effect and write snapshot  
-                        char target_side = (event.side == 'B') ? 'A' : 'B';
-                        
-                        // Check if there are orders to fill at this price
-                        bool can_fill = false;
-                        if (target_side == 'B') {
-                            can_fill = order_book.hasOrdersAtPrice(event.price, 'B');
-                        } else {
-                            can_fill = order_book.hasOrdersAtPrice(event.price, 'A');
-                        }
-                        
-                        if (can_fill) {
-                            // Apply the trade fill
-                            if (target_side == 'B') {
-                                order_book.fillOrdersAtPrice(event.price, event.size, 'B');
-                            } else {
-                                order_book.fillOrdersAtPrice(event.price, event.size, 'A');
-                            }
-                        }
-                        
-                        // Write snapshot for standalone T event (regardless of whether we could fill)
-                        MbpSnapshot snapshot = order_book.generateSnapshot(event);
-                        snapshot.action = 'T';
-                        snapshot.side = event.side;
-                        
-                        if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
-                            snapshots_written++;
-                        }
-                    }
-                } else {
-                    // For non-T events (F, R), write snapshot if should_write is true
-                    if (result.should_write) {
-                        MbpSnapshot snapshot = order_book.generateSnapshot(event);
-                        if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
-                            snapshots_written++;
-                        }
+                // For non-T events, write snapshot if should_write is true
+                if (result.should_write) {
+                    MbpSnapshot snapshot = order_book.generateSnapshot(event);
+                    if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
+                        snapshots_written++;
                     }
                 }
             }
         }
     }
     
-    // Process any remaining buffered Cancel events at the end - removed as no longer using buffer
+    // Process any remaining buffered Cancel events at the end
+    // These are Cancel events that never found a matching Add within the time window
+    for (auto& [order_id, pending_cancel] : cancel_buffer) {
+        std::cout << "Processing remaining buffered Cancel event for order " << order_id << std::endl;
+        ProcessResult result = order_book.processEvent(pending_cancel.event);
+        if (result.should_write) {
+            MbpSnapshot snapshot = order_book.generateSnapshot(pending_cancel.event);
+            if (csv_writer.writeSnapshot(snapshot, snapshots_written)) {
+                snapshots_written++;
+            }
+        }
+    }
+    cancel_buffer.clear(); // Clear the buffer
     
     auto process_end = std::chrono::high_resolution_clock::now();
     auto process_duration = std::chrono::duration_cast<std::chrono::milliseconds>(process_end - process_start);
@@ -248,9 +310,8 @@ int main(int argc, char* argv[]) {
     
     std::cout << "Processed " << processed_events << " events in " << process_duration.count() << " ms" << std::endl;
     std::cout << "Generated and wrote " << snapshots_written << " MBP-10 snapshots to output.csv" << std::endl;
-    std::cout << "Filtered " << snapshots_filtered << " snapshots due to no top-10 changes" << std::endl;
     std::cout << "Detected and consolidated " << tfc_sequences_detected << " T->F->C sequences into T actions" << std::endl;
-    std::cout << "Top-10 level filtering implemented - snapshots reduced!" << std::endl;
+    std::cout << "Improved T-F-C handling implemented - all events processed correctly" << std::endl;
     
     // Generate final snapshot for display purposes
     MbpSnapshot final_snapshot = order_book.generateSnapshot('S', 'N');

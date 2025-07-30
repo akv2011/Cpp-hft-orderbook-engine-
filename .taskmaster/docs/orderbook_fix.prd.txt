@@ -1,0 +1,111 @@
+# High-Frequency Trading Order Book Engine - Requirements Compliance & Output Matching
+
+## Project Overview
+The C++ order book engine processes MBO (Market By Order) data and generates MBP-10 (Market By Price) snapshots. The engine must follow specific Blockhouse requirements while matching the exact output format of the reference mbp.csv file.
+
+## Current Status
+- ✅ **T->F->C consolidation**: Working correctly (11 sequences detected)
+- ✅ **T events with side='N'**: Correctly handled (46 T events total)
+- ✅ **Initial R event**: Correctly ignored per requirement #1
+- ❌ **Output count mismatch**: 5,863 vs 3,928 expected (1,935 extra snapshots)
+- ❌ **A/C event filtering**: Too many A and C snapshots generated
+
+## Critical Requirements Compliance
+
+### Requirement #1: Ignore Initial R Event
+- Must ignore the first R (clear) action completely
+- Start with empty orderbook assumption
+- **Status**: ✅ IMPLEMENTED
+
+### Requirement #2: T->F->C Consolidation
+- T and F events don't affect orderbook directly
+- Only the C event in T->F->C sequence affects orderbook
+- Consolidate these 3 actions into single T action in output
+- T event comes from opposite side of the book
+- Store T action on the side that actually changes (filled side)
+- **Status**: ✅ IMPLEMENTED
+
+### Requirement #3: T Events with Side='N'
+- Don't alter orderbook for T events with side='N'
+- Still generate snapshots for these events
+- **Status**: ✅ IMPLEMENTED
+
+## Problem Analysis
+
+### Current Action Counts
+- A: 2915 vs 2003 expected (912 more)
+- C: 2902 vs 1878 expected (1024 more)
+- T: 46 vs 46 expected (perfect!)
+- R: 0 vs 1 expected (correctly ignored)
+
+### Root Cause
+The engine generates snapshots for every A and C event that modifies the orderbook, but the reference implementation is much more selective. The reference appears to:
+1. Filter out Cancel-Add pairs that represent order modifications rather than true market changes
+2. Only generate snapshots when orderbook state meaningfully changes
+3. Apply sophisticated consolidation logic beyond just T->F->C sequences
+
+## Technical Requirements
+
+### Snapshot Generation Logic
+- Implement intelligent filtering for A and C events
+- Only write snapshots when orderbook state represents meaningful market changes
+- Detect and consolidate Cancel-Add pairs within tight time windows
+- Maintain chronological order of events
+- Preserve FIFO order matching logic
+
+### Performance Requirements
+- Process 5,886 MBO events in under 250ms
+- Generate exactly 3,928 snapshots (matching reference)
+- Maintain sub-microsecond precision for event processing
+- Use efficient data structures for order book management
+
+### Output Format Requirements
+- Match exact CSV format of reference mbp.csv
+- Include all 60 MBP-10 fields (bid_px_00 through ask_ct_09)
+- Use precise timestamp formatting (2025-07-17T format)
+- Maintain proper column ordering and data types
+
+## Implementation Strategy
+
+### Phase 1: Advanced Event Filtering
+- Implement Cancel-Add pair detection within microsecond time windows
+- Add logic to filter out order modifications that don't change market state
+- Create event consolidation buffer for processing related events together
+
+### Phase 2: Snapshot Optimization
+- Only generate snapshots when top-10 price levels actually change
+- Implement intelligent deduplication of redundant snapshots
+- Add state comparison logic to determine meaningful changes
+
+### Phase 3: Output Verification
+- Ensure exact match with reference mbp.csv (3,928 snapshots)
+- Verify timestamp formatting matches expected format
+- Validate all action counts match reference exactly
+
+## Testing Requirements
+
+### Unit Tests
+- Test T->F->C sequence detection and consolidation
+- Test Cancel-Add pair filtering logic
+- Test orderbook state management with various event patterns
+- Test snapshot generation for different market conditions
+
+### Integration Tests
+- Full end-to-end processing of sample MBO data
+- Output comparison against reference mbp.csv
+- Performance benchmarking against target metrics
+- Edge case handling (empty orderbook, large orders, etc.)
+
+## Success Criteria
+1. Generate exactly 3,928 snapshots (matching reference)
+2. Maintain perfect T->F->C consolidation (11 sequences)
+3. Handle all T events correctly (46 total, including side='N')
+4. Process data in under 250ms
+5. Match reference output format exactly
+6. Pass all unit and integration tests
+
+## Constraints
+- Must maintain compliance with all 3 special requirements
+- Cannot break existing T->F->C consolidation logic
+- Must preserve order book integrity and FIFO matching
+- Output must be deterministic and reproducible

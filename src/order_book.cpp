@@ -126,9 +126,10 @@ ProcessResult OrderBook::processCancelEvent(const MboEvent& event) {
 }
 
 ProcessResult OrderBook::processTradeEvent(const MboEvent& event) {
-    // Ignore trade events with side 'N' as per requirements
+    // Requirement #3: If the side of the row with action 'T' is 'N', we should not alter the orderbook
     if (event.side == 'N') {
-        return {false, ' ', ' '}; // Don't alter orderbook or write snapshot
+        // Don't alter orderbook, but allow snapshot generation
+        return {true, 'T', 'N'};
     }
     
     // For T-F-C sequences, we only process the actual orderbook change during the C event
@@ -138,7 +139,9 @@ ProcessResult OrderBook::processTradeEvent(const MboEvent& event) {
     pending_trade_price_ = event.price;
     pending_trade_size_ = event.size;
     
-    return {false, ' ', ' '}; // Don't write a snapshot for the 'T' part of a sequence
+    // For standalone T events, we need to determine if they should write
+    // Let the main loop decide based on sequence detection
+    return {false, 'T', event.side}; // Don't auto-write for T events, let main loop handle it
 }
 
 ProcessResult OrderBook::processFillEvent(const MboEvent& event) {
@@ -499,4 +502,57 @@ double OrderBook::getBestAskPrice() const {
         return ask_levels_.begin()->first;
     }
     return 0.0;  // No asks available
+}
+
+bool OrderBook::hasOrdersAtPrice(double price, char side) const {
+    if (side == 'B') {
+        auto it = bid_levels_.find(price);
+        return it != bid_levels_.end() && it->second.total_size > 0;
+    } else if (side == 'A') {
+        auto it = ask_levels_.find(price);
+        return it != ask_levels_.end() && it->second.total_size > 0;
+    }
+    return false;
+}
+
+void OrderBook::fillOrdersAtPrice(double price, uint64_t size, char side) {
+    if (side == 'B') {
+        auto it = bid_levels_.find(price);
+        if (it != bid_levels_.end()) {
+            fillOrdersAtLevel(it->second, size, side);
+            if (it->second.total_size == 0) {
+                bid_levels_.erase(it);
+            }
+        }
+    } else if (side == 'A') {
+        auto it = ask_levels_.find(price);
+        if (it != ask_levels_.end()) {
+            fillOrdersAtLevel(it->second, size, side);
+            if (it->second.total_size == 0) {
+                ask_levels_.erase(it);
+            }
+        }
+    }
+}
+
+Top10State OrderBook::captureTop10State() const {
+    Top10State state;
+    
+    // Capture bid levels (highest to lowest price)
+    int bid_index = 0;
+    for (auto it = bid_levels_.begin(); it != bid_levels_.end() && bid_index < 10; ++it, ++bid_index) {
+        state.bid_prices[bid_index] = it->first;
+        state.bid_sizes[bid_index] = it->second.total_size;
+        state.bid_counts[bid_index] = it->second.order_count;
+    }
+    
+    // Capture ask levels (lowest to highest price)
+    int ask_index = 0;
+    for (auto it = ask_levels_.begin(); it != ask_levels_.end() && ask_index < 10; ++it, ++ask_index) {
+        state.ask_prices[ask_index] = it->first;
+        state.ask_sizes[ask_index] = it->second.total_size;
+        state.ask_counts[ask_index] = it->second.order_count;
+    }
+    
+    return state;
 }

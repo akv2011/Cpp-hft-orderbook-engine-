@@ -10,6 +10,48 @@
 // Forward declarations
 struct MboEvent;
 
+// Lightweight structure to capture and compare top-10 orderbook state
+struct Top10State {
+    // Bid levels (prices, sizes, counts for levels 0-9)
+    double bid_prices[10];
+    uint64_t bid_sizes[10];
+    uint32_t bid_counts[10];
+    
+    // Ask levels (prices, sizes, counts for levels 0-9)
+    double ask_prices[10];
+    uint64_t ask_sizes[10];
+    uint32_t ask_counts[10];
+    
+    // Default constructor - zero all fields
+    Top10State() {
+        for (int i = 0; i < 10; ++i) {
+            bid_prices[i] = ask_prices[i] = 0.0;
+            bid_sizes[i] = ask_sizes[i] = 0;
+            bid_counts[i] = ask_counts[i] = 0;
+        }
+    }
+    
+    // Equality operator for state comparison
+    bool operator==(const Top10State& other) const {
+        for (int i = 0; i < 10; ++i) {
+            if (bid_prices[i] != other.bid_prices[i] || 
+                bid_sizes[i] != other.bid_sizes[i] || 
+                bid_counts[i] != other.bid_counts[i] ||
+                ask_prices[i] != other.ask_prices[i] || 
+                ask_sizes[i] != other.ask_sizes[i] || 
+                ask_counts[i] != other.ask_counts[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    // Inequality operator
+    bool operator!=(const Top10State& other) const {
+        return !(*this == other);
+    }
+};
+
 // Result of processing an MBO event, telling the main loop what to do
 struct ProcessResult {
     bool should_write;    // True if a snapshot should be written
@@ -130,6 +172,9 @@ public:
     // Backward compatibility method for testing (uses dummy event data)
     MbpSnapshot generateSnapshot(char action = 'S', char side = 'N') const;
     
+    // Capture current top-10 state for comparison (for snapshot filtering)
+    Top10State captureTop10State() const;
+    
     // Statistics and debugging
     size_t getBidLevelCount() const { return bid_levels_.size(); }
     size_t getAskLevelCount() const { return ask_levels_.size(); }
@@ -153,6 +198,10 @@ public:
     
     // Methods for testing and manual order manipulation
     void addOrder(uint64_t order_id, double price, uint64_t size, char side);
+    
+    // Methods for standalone trade processing
+    bool hasOrdersAtPrice(double price, char side) const;
+    void fillOrdersAtPrice(double price, uint64_t size, char side);
 
 private:
     // Bid levels: std::greater for descending price order (highest first)
