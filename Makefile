@@ -10,7 +10,7 @@ BINDIR = bin
 OBJDIR = build
 
 # Source files for main application
-MAIN_SOURCES = $(SRCDIR)/main.cpp $(SRCDIR)/mbo_parser.cpp $(SRCDIR)/order_book.cpp $(SRCDIR)/mbp_csv_writer.cpp
+MAIN_SOURCES = $(SRCDIR)/main.cpp $(SRCDIR)/mbo_parser.cpp $(SRCDIR)/order_book.cpp $(SRCDIR)/mbp_csv_writer.cpp $(SRCDIR)/event_buffer.cpp
 MAIN_OBJECTS = $(MAIN_SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 
 # All source files (for other targets)

@@ -13,13 +13,16 @@ struct MboEvent {
     double price;                       // Price level
     uint64_t size;                      // Order size
     uint64_t order_id;                  // Unique order identifier
+    uint8_t flags;                      // Event flags
+    int32_t ts_in_delta;               // Timestamp delta
+    uint64_t sequence;                  // Original sequence number from input
     
     // Default constructor
-    MboEvent() : ts_event(0), action('\0'), side('\0'), price(0.0), size(0), order_id(0) {}
+    MboEvent() : ts_event(0), action('\0'), side('\0'), price(0.0), size(0), order_id(0), flags(0), ts_in_delta(0), sequence(0) {}
     
     // Parameterized constructor for testing
     MboEvent(std::chrono::nanoseconds ts, char act, char sd, double pr, uint64_t sz, uint64_t oid)
-        : ts_event(ts), action(act), side(sd), price(pr), size(sz), order_id(oid) {}
+        : ts_event(ts), action(act), side(sd), price(pr), size(sz), order_id(oid), flags(0), ts_in_delta(0), sequence(0) {}
 };
 
 // High-performance MBO CSV parser class

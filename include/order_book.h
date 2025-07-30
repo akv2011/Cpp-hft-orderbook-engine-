@@ -10,6 +10,16 @@
 // Forward declarations
 struct MboEvent;
 
+// Result of processing an MBO event, telling the main loop what to do
+struct ProcessResult {
+    bool should_write;    // True if a snapshot should be written
+    char snapshot_action; // Action for the snapshot ('A', 'C', 'T', 'R')
+    char snapshot_side;   // Side for the snapshot ('A', 'B', 'N')
+    
+    // Convert to bool for legacy compatibility with tests
+    operator bool() const { return true; } // Most events are processed successfully
+};
+
 // Order entry for FIFO tracking within price levels
 struct OrderEntry {
     uint64_t order_id;
@@ -52,6 +62,15 @@ struct OrderData {
 struct MbpSnapshot {
     std::chrono::nanoseconds timestamp;
     uint64_t sequence_number;
+    char action;  // The MBO action that generated this snapshot ('A', 'C', 'T', 'R')
+    char side;    // The side for this snapshot ('A', 'B', 'N')
+    
+    // Original event data for CSV output
+    double event_price;
+    uint64_t event_size;
+    uint64_t event_order_id;
+    uint8_t event_flags;
+    int32_t event_ts_in_delta;
     
     // Bid levels (00-09, highest to lowest price)
     double bid_px_00, bid_px_01, bid_px_02, bid_px_03, bid_px_04;
@@ -73,7 +92,8 @@ struct MbpSnapshot {
     uint32_t ask_ct_00, ask_ct_01, ask_ct_02, ask_ct_03, ask_ct_04;
     uint32_t ask_ct_05, ask_ct_06, ask_ct_07, ask_ct_08, ask_ct_09;
     
-    MbpSnapshot() : timestamp(0), sequence_number(0) {
+    MbpSnapshot() : timestamp(0), sequence_number(0), action('S'), side('N'), 
+                    event_price(0.0), event_size(0), event_order_id(0), event_flags(0), event_ts_in_delta(0) {
         // Initialize all bid fields to 0
         bid_px_00 = bid_px_01 = bid_px_02 = bid_px_03 = bid_px_04 = 0.0;
         bid_px_05 = bid_px_06 = bid_px_07 = bid_px_08 = bid_px_09 = 0.0;
@@ -100,18 +120,33 @@ struct MbpSnapshot {
 class OrderBook {
 public:
     OrderBook();
-    ~OrderBook() = default;
     
-    // Process MBO events
-    bool processEvent(const MboEvent& event);
+    // The core method to process an MBO event and update the book
+    ProcessResult processEvent(const MboEvent& event);
     
-    // Generate MBP-10 snapshot
-    MbpSnapshot generateSnapshot() const;
+    // Generates a market-by-price snapshot of the current order book state
+    MbpSnapshot generateSnapshot(const MboEvent& event) const;
+    
+    // Backward compatibility method for testing (uses dummy event data)
+    MbpSnapshot generateSnapshot(char action = 'S', char side = 'N') const;
     
     // Statistics and debugging
     size_t getBidLevelCount() const { return bid_levels_.size(); }
     size_t getAskLevelCount() const { return ask_levels_.size(); }
     size_t getOrderCount() const { return orders_.size(); }
+    
+    // Order existence checking
+    bool orderExists(uint64_t order_id) const { return orders_.find(order_id) != orders_.end(); }
+    
+    // Get best bid and ask prices for trade filtering
+    std::pair<double, double> getBestBidAsk() const;
+    double getBestBidPrice() const;
+    double getBestAskPrice() const;
+    
+    // Trade state access
+    bool isInTradeSequence() const { return trade_state_ == TradeState::EXPECTING_FILL; }
+    bool wasLastFillFromTrade() const { return last_fill_was_trade_; }
+    void resetTradeFlag() { last_fill_was_trade_ = false; }
     
     // Clear all data (for reset events)
     void clear();
@@ -143,15 +178,17 @@ private:
     
     TradeState trade_state_;
     char pending_trade_side_;  // Side of the pending trade ('B' or 'A')
+    char pending_actual_trade_side_;  // Actual side that was affected during fill
     double pending_trade_price_;
     uint64_t pending_trade_size_;
+    bool last_fill_was_trade_;  // Track if the last fill was part of a trade sequence
     
     // Event processing methods
-    bool processAddEvent(const MboEvent& event);
-    bool processCancelEvent(const MboEvent& event);
-    bool processTradeEvent(const MboEvent& event);
-    bool processFillEvent(const MboEvent& event);
-    bool processResetEvent(const MboEvent& event);
+    ProcessResult processAddEvent(const MboEvent& event);
+    ProcessResult processCancelEvent(const MboEvent& event);
+    ProcessResult processTradeEvent(const MboEvent& event);
+    ProcessResult processFillEvent(const MboEvent& event);
+    ProcessResult processResetEvent(const MboEvent& event);
     
     // Helper methods
     void cancelOrder(uint64_t order_id, uint64_t cancel_size = 0);

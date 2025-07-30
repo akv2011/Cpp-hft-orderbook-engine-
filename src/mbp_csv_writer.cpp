@@ -155,14 +155,14 @@ std::string MbpCsvWriter::buildCsvRow(const MbpSnapshot& snapshot, uint64_t row_
         << "10,"                                      // rtype (constant 10)
         << "2,"                                       // publisher_id (constant 2)
         << "1108,"                                    // instrument_id (constant 1108)
-        << "S,"                                       // action (S for snapshot)
-        << "N,"                                       // side (N for none/snapshot)
+        << snapshot.action << ","                    // action code from the event
+        << snapshot.side << ","                      // side from snapshot
         << "0,"                                       // depth (0 for snapshot)
-        << ","                                        // price (empty for snapshot)
-        << "0,"                                       // size (0 for snapshot)
-        << "0,"                                       // flags (0 for snapshot)
-        << "0,"                                       // ts_in_delta (0 for snapshot)
-        << snapshot.sequence_number << ",";           // sequence
+        << (snapshot.event_price > 0 ? formatPrice(snapshot.event_price) : "") << ","  // price from original event
+        << snapshot.event_size << ","                // size from original event  
+        << static_cast<int>(snapshot.event_flags) << ","  // flags from original event
+        << snapshot.event_ts_in_delta << ","        // ts_in_delta from original event
+        << snapshot.sequence_number << ",";           // sequence from original event
     
     // Add bid levels 00-09 (price, size, count for each level)
     const double* bid_prices = &snapshot.bid_px_00;
@@ -190,8 +190,8 @@ std::string MbpCsvWriter::buildCsvRow(const MbpSnapshot& snapshot, uint64_t row_
         }
     }
     
-    // Add symbol and order_id (constants from sample)
-    row << ",ARL,0";
+    // Add symbol and order_id 
+    row << ",ARL," << snapshot.event_order_id;
     
     return row.str();
 }

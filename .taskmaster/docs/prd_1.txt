@@ -1,0 +1,94 @@
+[Project Name]
+Final Submission Checklist for High-Frequency Order Book Reconstructor
+
+[Version]
+1.0
+
+[Objective]
+Complete the final verification, validation, and submission tasks for the High-Frequency Order Book Reconstructor project. Ensure 100% correctness, optimize performance, and prepare all deliverables for submission.
+
+[Key Features & Requirements]
+
+1. **Ultimate Correctness Verification (CRITICAL PRIORITY)**
+   * Run comprehensive file comparison between generated `output.csv` and reference `quant_dev_trial/mbp.csv`
+   * Use appropriate comparison tools for Windows PowerShell environment
+   * Identify and fix any discrepancies, no matter how minor
+   * Verify exact match of 5,841 lines with correct formatting
+   * Validate price precision, action codes, timestamps, and all numeric values
+
+2. **Special Trade Logic Review and Validation**
+   * Verify T->F->C state machine implementation correctness
+   * Ensure proper handling of trade sequences where only Cancel action affects order book
+   * Validate that F events contain the actual trade size information
+   * Confirm correct application of size reduction to OPPOSITE side of book
+   * Test edge cases in special trade handling
+
+3. **Output Formatting Corrections**
+   * Fix action column to use correct action codes ('A', 'C', 'T') instead of 'S'
+   * Ensure 'T' action is properly written for special trade sequences
+   * Modify MbpCsvWriter to accept and write correct action from MboEvent
+   * Validate all output columns match reference format exactly
+
+4. **Performance Optimization and Measurement**
+   * Implement final performance optimizations
+   * Measure and document processing time for complete mbo.csv dataset
+   * Optimize compiler flags (-O3, -flto, etc.)
+   * Document performance metrics and hardware specifications
+
+5. **Code Quality and Documentation**
+   * Clean up code with proper comments and structure
+   * Ensure consistent coding style throughout project
+   * Remove debug code and temporary implementations
+   * Validate all header files have proper include guards
+
+[Deliverable Requirements]
+
+1. **README.txt Creation**
+   * High-level design explanation (data structures, algorithms)
+   * Performance optimizations documentation
+   * Special trade logic implementation details
+   * Clear build and run instructions
+   * Performance metrics and benchmarks
+   * Hardware specifications used for testing
+
+2. **Final Executable Generation**
+   * Run `make clean` to remove all build artifacts
+   * Generate optimized release binary with `make release`
+   * Verify executable name follows naming convention
+   * Test final executable with provided data
+
+3. **GitHub Repository Preparation**
+   * Create private GitHub repository
+   * Organize source code files (.cpp, .h)
+   * Include Makefile and README.txt
+   * Remove temporary files and build artifacts
+   * Ensure clean repository structure
+
+4. **Final Testing and Validation**
+   * Run complete test suite if available
+   * Perform end-to-end testing with provided datasets
+   * Validate memory usage and performance characteristics
+   * Confirm no memory leaks or undefined behavior
+
+[Critical Success Criteria]
+
+1. **100% Output Correctness**: Generated output.csv must be identical to reference mbp.csv
+2. **Performance Target**: Process complete mbo.csv dataset efficiently (target ~220ms)
+3. **Code Quality**: Clean, well-documented, production-ready code
+4. **Complete Deliverables**: All required files and documentation ready for submission
+
+[Priority Order]
+
+1. **HIGHEST**: File comparison and correctness verification
+2. **HIGH**: Special trade logic review and fixes
+3. **HIGH**: Output formatting corrections
+4. **MEDIUM**: Performance optimization and measurement
+5. **MEDIUM**: Documentation and README creation
+6. **LOW**: Repository preparation and final packaging
+
+[Risk Mitigation]
+
+* If diff check fails, prioritize debugging special trade logic first
+* If performance is insufficient, review data structure choices and compiler optimizations
+* If build fails, verify Makefile configuration and dependencies
+* Have backup testing strategy if automated comparison tools fail

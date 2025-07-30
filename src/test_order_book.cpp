@@ -329,28 +329,48 @@ void testTradeEventHandling() {
     book.addOrder(2001, 100.75, 75, 'A');
     book.addOrder(2002, 100.75, 25, 'A');
     
-    // Test T-F-C sequence (Trade-Fill-Cancel)
+    // Test initial state
+    MbpSnapshot initial_snapshot = book.generateSnapshot();
+    assert(initial_snapshot.bid_px_00 == 100.50);
+    assert(initial_snapshot.bid_sz_00 == 150); // 100 + 50
+    assert(initial_snapshot.bid_ct_00 == 2);
+    assert(initial_snapshot.ask_px_00 == 100.75);
+    assert(initial_snapshot.ask_sz_00 == 100); // 75 + 25
+    assert(initial_snapshot.ask_ct_00 == 2);
+    
+    // T event should NOT change the order book (per requirements)
     MboEvent trade{std::chrono::nanoseconds(0), 'T', 'A', 100.50, 30, 0};
     assert(book.processEvent(trade));
     
     MbpSnapshot snapshot1 = book.generateSnapshot();
     assert(snapshot1.bid_px_00 == 100.50);
-    assert(snapshot1.bid_sz_00 == 150); // 100 + 50
+    assert(snapshot1.bid_sz_00 == 150); // Unchanged - T event doesn't affect book
     assert(snapshot1.bid_ct_00 == 2);
     assert(snapshot1.ask_px_00 == 100.75);
-    assert(snapshot1.ask_sz_00 == 100); // 75 + 25
+    assert(snapshot1.ask_sz_00 == 100); // Unchanged - T event doesn't affect book
     assert(snapshot1.ask_ct_00 == 2);
     
-    // Fill event should reduce ask side (opposite of trade side)
+    // F event should also NOT change the order book (per requirements)
     MboEvent fill{std::chrono::nanoseconds(0), 'F', 'A', 100.75, 30, 2001};
     assert(book.processEvent(fill));
     
     MbpSnapshot snapshot2 = book.generateSnapshot();
     assert(snapshot2.bid_px_00 == 100.50);
-    assert(snapshot2.bid_sz_00 == 150); // Bids unchanged
+    assert(snapshot2.bid_sz_00 == 150); // Still unchanged - F event doesn't affect book
     assert(snapshot2.ask_px_00 == 100.75);
-    assert(snapshot2.ask_sz_00 == 70);  // 100 - 30 = 70 (45 + 25)
-    assert(snapshot2.ask_ct_00 == 2);  // Both orders still exist
+    assert(snapshot2.ask_sz_00 == 100); // Still unchanged - F event doesn't affect book
+    assert(snapshot2.ask_ct_00 == 2);
+    
+    // C event should complete the T-F-C sequence and apply the trade
+    // The trade was T 'A' 100.50 30, so it should affect the BID side (opposite)
+    MboEvent cancel{std::chrono::nanoseconds(0), 'C', 'A', 100.75, 30, 2001};
+    assert(book.processEvent(cancel));
+    
+    MbpSnapshot snapshot3 = book.generateSnapshot();
+    assert(snapshot3.bid_px_00 == 100.50);
+    assert(snapshot3.bid_sz_00 == 120); // 150 - 30 = 120 (trade applied to bid side)
+    assert(snapshot3.ask_px_00 == 100.75);
+    assert(snapshot3.ask_sz_00 == 100); // Ask side unchanged by the trade
     
     std::cout << "✓ Basic trade event handling passed" << std::endl;
 }
@@ -368,18 +388,29 @@ void testTradeEventFIFO() {
     assert(snapshot1.ask_px_00 == 100.75);
     assert(snapshot1.ask_sz_00 == 90); // 20 + 30 + 40
     
-    // Trade and fill that should affect multiple orders in FIFO order
+    // Complete T-F-C sequence that should affect multiple orders in FIFO order
+    // Trade from bid side (B) should affect ask side orders
     MboEvent trade{std::chrono::nanoseconds(0), 'T', 'B', 100.75, 35, 0}; // Trade from bid side
     assert(book.processEvent(trade));
     
+    // F event should not change the order book yet
     MboEvent fill{std::chrono::nanoseconds(0), 'F', 'A', 100.75, 35, 2001}; // Fill ask side
     assert(book.processEvent(fill));
+    
+    // Order book should still be unchanged after T-F
+    MbpSnapshot snapshot_tf = book.generateSnapshot();
+    assert(snapshot_tf.ask_px_00 == 100.75);
+    assert(snapshot_tf.ask_sz_00 == 90); // Still unchanged after T-F
+    
+    // C event completes the sequence and applies the trade
+    MboEvent cancel{std::chrono::nanoseconds(0), 'C', 'A', 100.75, 35, 2001}; // Cancel to complete sequence
+    assert(book.processEvent(cancel));
     
     // Should fill first order completely (20) and second order partially (15)
     MbpSnapshot snapshot2 = book.generateSnapshot();
     assert(snapshot2.ask_px_00 == 100.75);
     assert(snapshot2.ask_sz_00 == 55); // 90 - 35 = 55
-    assert(snapshot2.ask_ct_00 == 2); // One order removed
+    assert(snapshot2.ask_ct_00 == 2); // One order removed (20 size order), one partially filled
     
     std::cout << "✓ Trade FIFO policy passed" << std::endl;
 }
@@ -415,31 +446,39 @@ void testTradeEventOppositeSideLogic() {
     book.addOrder(1001, 100.50, 100, 'B');
     book.addOrder(2001, 100.75, 100, 'A');
     
-    // Trade from ask side (A) should affect bid side orders when filled
+    // Complete T-F-C sequence: Trade from ask side (A) should affect bid side orders
     MboEvent trade1{std::chrono::nanoseconds(0), 'T', 'A', 100.50, 25, 0};
     assert(book.processEvent(trade1));
     
     MboEvent fill1{std::chrono::nanoseconds(0), 'F', 'A', 100.75, 25, 2001};
     assert(book.processEvent(fill1));
     
+    // Complete the T-F-C sequence
+    MboEvent cancel1{std::chrono::nanoseconds(0), 'C', 'A', 100.75, 25, 2001};
+    assert(book.processEvent(cancel1));
+    
     MbpSnapshot snapshot1 = book.generateSnapshot();
     assert(snapshot1.bid_px_00 == 100.50);
-    assert(snapshot1.bid_sz_00 == 100); // Bid unchanged
+    assert(snapshot1.bid_sz_00 == 75); // Bid reduced by 25 (opposite side logic)
     assert(snapshot1.ask_px_00 == 100.75);
-    assert(snapshot1.ask_sz_00 == 75);  // Ask reduced by 25
+    assert(snapshot1.ask_sz_00 == 100);  // Ask unchanged (trade affects opposite side)
     
-    // Trade from bid side (B) should affect ask side orders when filled
+    // Complete T-F-C sequence: Trade from bid side (B) should affect ask side orders  
     MboEvent trade2{std::chrono::nanoseconds(0), 'T', 'B', 100.75, 30, 0};
     assert(book.processEvent(trade2));
     
     MboEvent fill2{std::chrono::nanoseconds(0), 'F', 'B', 100.50, 30, 1001};
     assert(book.processEvent(fill2));
     
+    // Complete the T-F-C sequence
+    MboEvent cancel2{std::chrono::nanoseconds(0), 'C', 'B', 100.50, 30, 1001};
+    assert(book.processEvent(cancel2));
+    
     MbpSnapshot snapshot2 = book.generateSnapshot();
     assert(snapshot2.bid_px_00 == 100.50);
-    assert(snapshot2.bid_sz_00 == 70);  // Bid reduced by 30
+    assert(snapshot2.bid_sz_00 == 75);  // Bid unchanged from previous (trade affects opposite side)
     assert(snapshot2.ask_px_00 == 100.75);
-    assert(snapshot2.ask_sz_00 == 75);  // Ask unchanged from previous
+    assert(snapshot2.ask_sz_00 == 70);  // Ask reduced by 30 (opposite side logic)
     
     std::cout << "✓ Opposite side logic passed" << std::endl;
 }

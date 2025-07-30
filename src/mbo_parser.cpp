@@ -120,6 +120,30 @@ bool MboParser::parseLine(const char* line, MboEvent& event) {
     if (endptr == ptr) {
         event.order_id = 0;
     }
+    ptr = skipToNextField(ptr);
+    if (!ptr) return false;
+    
+    // Parse flags (field 12)
+    event.flags = static_cast<uint8_t>(fastParseUInt64(ptr, &endptr));
+    if (endptr == ptr) {
+        event.flags = 0;
+    }
+    ptr = skipToNextField(ptr);
+    if (!ptr) return false;
+    
+    // Parse ts_in_delta (field 13)
+    event.ts_in_delta = static_cast<int32_t>(fastParseUInt64(ptr, &endptr));
+    if (endptr == ptr) {
+        event.ts_in_delta = 0;
+    }
+    ptr = skipToNextField(ptr);
+    if (!ptr) return false;
+    
+    // Parse sequence (field 14)
+    event.sequence = fastParseUInt64(ptr, &endptr);
+    if (endptr == ptr) {
+        event.sequence = 0;
+    }
     
     return true;
 }

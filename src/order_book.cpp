@@ -1,15 +1,17 @@
-#include "order_book.h"
+#include "../include/order_book.h"
 #include "mbo_parser.h"
 #include <iostream>
 #include <algorithm>
 
 OrderBook::OrderBook() : sequence_counter_(0), trade_state_(TradeState::NORMAL), 
-                         pending_trade_side_('\0'), pending_trade_price_(0.0), pending_trade_size_(0) {
+                         pending_trade_side_('\0'), pending_actual_trade_side_('\0'), 
+                         pending_trade_price_(0.0), pending_trade_size_(0),
+                         last_fill_was_trade_(false) {
     // Reserve space for common order book sizes to avoid reallocations
     orders_.reserve(10000);  // Typical order book might have thousands of orders
 }
 
-bool OrderBook::processEvent(const MboEvent& event) {
+ProcessResult OrderBook::processEvent(const MboEvent& event) {
     ++sequence_counter_;
     
     switch (event.action) {
@@ -25,38 +27,88 @@ bool OrderBook::processEvent(const MboEvent& event) {
             return processResetEvent(event);
         default:
             std::cerr << "Warning: Unknown action '" << event.action << "'" << std::endl;
-            return false;
+            return {false, ' ', ' '};
     }
 }
 
-bool OrderBook::processAddEvent(const MboEvent& event) {
+ProcessResult OrderBook::processAddEvent(const MboEvent& event) {
     if (event.order_id == 0) {
         // Skip orders with invalid ID
-        return true;
+        return {true, 'A', event.side};
     }
     
     // Check if order already exists
     if (orders_.find(event.order_id) != orders_.end()) {
         std::cerr << "Warning: Order " << event.order_id << " already exists" << std::endl;
-        return false;
+        return {false, ' ', ' '};
     }
     
     addOrder(event.order_id, event.price, event.size, event.side);
-    return true;
+    last_fill_was_trade_ = false;  // Reset trade flag for regular add
+    return {true, 'A', event.side};
 }
 
-bool OrderBook::processCancelEvent(const MboEvent& event) {
+ProcessResult OrderBook::processCancelEvent(const MboEvent& event) {
     if (event.order_id == 0) {
         // Skip orders with invalid ID
-        return true;
+        return {true, 'C', event.side};
+    }
+
+    // Check if this completes a T-F-C sequence
+    if (last_fill_was_trade_ && trade_state_ == TradeState::EXPECTING_FILL) {
+        // This cancel completes the T-F-C sequence
+        // Apply the trade to the OPPOSITE side of what the original T event indicated
+        
+        char target_side = getOppositeSide(pending_trade_side_);
+        double trade_price = pending_trade_price_;
+        uint64_t trade_size = pending_trade_size_;
+        
+        // Apply the trade fill to the correct side
+        if (target_side == 'B') {
+            // Fill bid orders at the trade price
+            auto level_it = bid_levels_.find(trade_price);
+            if (level_it != bid_levels_.end()) {
+                fillOrdersAtLevel(level_it->second, trade_size, target_side);
+                // Remove level if it becomes empty
+                if (level_it->second.total_size == 0) {
+                    bid_levels_.erase(level_it);
+                }
+            }
+        } else if (target_side == 'A') {
+            // Fill ask orders at the trade price
+            auto level_it = ask_levels_.find(trade_price);
+            if (level_it != ask_levels_.end()) {
+                fillOrdersAtLevel(level_it->second, trade_size, target_side);
+                // Remove level if it becomes empty
+                if (level_it->second.total_size == 0) {
+                    ask_levels_.erase(level_it);
+                }
+            }
+        }
+        
+        // Capture the side that was actually filled before resetting state
+        char filled_side = pending_actual_trade_side_;
+        
+        // Reset trade state
+        trade_state_ = TradeState::NORMAL;
+        pending_trade_side_ = '\0';
+        pending_actual_trade_side_ = '\0';
+        pending_trade_price_ = 0.0;
+        pending_trade_size_ = 0;
+        last_fill_was_trade_ = false;
+        
+        // Return T action on the side that was actually filled (from the F event)
+        return {true, 'T', filled_side};
     }
     
+    // Regular cancel processing
     auto it = orders_.find(event.order_id);
     if (it == orders_.end()) {
         // Order not found - this can happen in partial data feeds
-        // std::cerr << "Warning: Cancel for non-existent order " << event.order_id << std::endl;
-        return true; // Don't treat as error
+        return {true, 'C', 'N'}; // Don't treat as error, but indicate no side
     }
+    
+    char side = it->second.side;
     
     // Use the size from the event for partial cancellations
     // If event.size is 0 or >= order size, it's a full cancel
@@ -70,66 +122,46 @@ bool OrderBook::processCancelEvent(const MboEvent& event) {
         cancelOrder(event.order_id, cancel_size);
     }
     
-    return true;
+    return {true, 'C', side};
 }
 
-bool OrderBook::processTradeEvent(const MboEvent& event) {
+ProcessResult OrderBook::processTradeEvent(const MboEvent& event) {
     // Ignore trade events with side 'N' as per requirements
     if (event.side == 'N') {
-        return true;
+        return {false, ' ', ' '}; // Don't alter orderbook or write snapshot
     }
     
-    // Store trade information and set state to expect fill
+    // For T-F-C sequences, we only process the actual orderbook change during the C event
+    // The T event just starts the sequence but doesn't modify the book yet
     trade_state_ = TradeState::EXPECTING_FILL;
     pending_trade_side_ = event.side;
     pending_trade_price_ = event.price;
     pending_trade_size_ = event.size;
     
-    return true;
+    return {false, ' ', ' '}; // Don't write a snapshot for the 'T' part of a sequence
 }
 
-bool OrderBook::processFillEvent(const MboEvent& event) {
+ProcessResult OrderBook::processFillEvent(const MboEvent& event) {
     // Fill events should only be processed if we're expecting one
     if (trade_state_ != TradeState::EXPECTING_FILL) {
         std::cerr << "Warning: Unexpected fill event" << std::endl;
-        return true; // Don't treat as error
+        return {false, ' ', ' '}; // Don't treat as error
     }
     
-    // Process the fill directly on the specified side and price from the fill event
-    if (event.side == 'B') {
-        // Fill bid orders at the specified price
-        auto level_it = bid_levels_.find(event.price);
-        if (level_it != bid_levels_.end()) {
-            fillOrdersAtLevel(level_it->second, event.size, event.side);
-            // Remove level if it becomes empty
-            if (level_it->second.total_size == 0) {
-                bid_levels_.erase(level_it);
-            }
-        }
-    } else if (event.side == 'A') {
-        // Fill ask orders at the specified price
-        auto level_it = ask_levels_.find(event.price);
-        if (level_it != ask_levels_.end()) {
-            fillOrdersAtLevel(level_it->second, event.size, event.side);
-            // Remove level if it becomes empty
-            if (level_it->second.total_size == 0) {
-                ask_levels_.erase(level_it);
-            }
-        }
-    }
+    // The Fill event doesn't modify the orderbook directly
+    // We just track that we received the expected F event and wait for C
+    last_fill_was_trade_ = true;
     
-    // Reset trade state
-    trade_state_ = TradeState::NORMAL;
-    pending_trade_side_ = '\0';
-    pending_trade_price_ = 0.0;
-    pending_trade_size_ = 0;
+    // Store the fill event details for when we process the cancel
+    pending_actual_trade_side_ = event.side;
     
-    return true;
+    // Don't reset trade state yet - wait for the cancel event
+    return {false, ' ', ' '}; // Don't write a snapshot for the 'F' part of a sequence
 }
 
-bool OrderBook::processResetEvent(const MboEvent& event) {
+ProcessResult OrderBook::processResetEvent(const MboEvent& event) {
     clear();
-    return true;
+    return {true, 'R', 'N'};
 }
 
 void OrderBook::addOrder(uint64_t order_id, double price, uint64_t size, char side) {
@@ -250,11 +282,19 @@ void OrderBook::updateAskLevel(double price, int64_t size_delta, int32_t count_d
     }
 }
 
-MbpSnapshot OrderBook::generateSnapshot() const {
+MbpSnapshot OrderBook::generateSnapshot(const MboEvent& event) const {
     MbpSnapshot snapshot;
-    snapshot.sequence_number = sequence_counter_;
-    snapshot.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::high_resolution_clock::now().time_since_epoch());
+    snapshot.sequence_number = event.sequence;  // Use the original sequence number from MBO event
+    snapshot.action = event.action;  // Use the original event action
+    snapshot.side = event.side;      // Use the original event side
+    snapshot.timestamp = event.ts_event;  // Use the original event timestamp
+    
+    // Store original event data
+    snapshot.event_price = event.price;
+    snapshot.event_size = event.size;
+    snapshot.event_order_id = event.order_id;
+    snapshot.event_flags = event.flags;
+    snapshot.event_ts_in_delta = event.ts_in_delta;
     
     // Arrays to hold pointers to the individual fields for easy iteration
     double* bid_prices[] = {&snapshot.bid_px_00, &snapshot.bid_px_01, &snapshot.bid_px_02, &snapshot.bid_px_03, &snapshot.bid_px_04,
@@ -306,17 +346,34 @@ MbpSnapshot OrderBook::generateSnapshot() const {
     return snapshot;
 }
 
+// Backward compatibility method for testing
+MbpSnapshot OrderBook::generateSnapshot(char action, char side) const {
+    // Create a dummy event with current timestamp for testing
+    MboEvent dummy_event;
+    dummy_event.action = action;
+    dummy_event.side = side;
+    dummy_event.ts_event = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch());
+    dummy_event.price = 0.0;
+    dummy_event.size = 0;
+    dummy_event.order_id = 0;
+    
+    return generateSnapshot(dummy_event);
+}
+
 void OrderBook::clear() {
     bid_levels_.clear();
     ask_levels_.clear();
     orders_.clear();
-    sequence_counter_ = 0;
+    // Don't reset sequence_counter_ - it should continue incrementing across resets
     
     // Reset trade state
     trade_state_ = TradeState::NORMAL;
     pending_trade_side_ = '\0';
+    pending_actual_trade_side_ = '\0';
     pending_trade_price_ = 0.0;
     pending_trade_size_ = 0;
+    last_fill_was_trade_ = false;
 }
 
 void OrderBook::processTradeFill(char trade_side, double price, uint64_t size) {
@@ -410,4 +467,36 @@ void OrderBook::updateOrderInQueue(LevelData& level, uint64_t order_id, uint64_t
     }
     
     level.order_queue = new_queue;
+}
+
+// Get best bid and ask prices for trade filtering
+std::pair<double, double> OrderBook::getBestBidAsk() const {
+    double best_bid = 0.0;  // Default to 0 if no bids
+    double best_ask = 0.0;  // Default to 0 if no asks
+    
+    // Get best bid (highest price) - first element in descending map
+    if (!bid_levels_.empty()) {
+        best_bid = bid_levels_.begin()->first;
+    }
+    
+    // Get best ask (lowest price) - first element in ascending map
+    if (!ask_levels_.empty()) {
+        best_ask = ask_levels_.begin()->first;
+    }
+    
+    return std::make_pair(best_bid, best_ask);
+}
+
+double OrderBook::getBestBidPrice() const {
+    if (!bid_levels_.empty()) {
+        return bid_levels_.begin()->first;
+    }
+    return 0.0;  // No bids available
+}
+
+double OrderBook::getBestAskPrice() const {
+    if (!ask_levels_.empty()) {
+        return ask_levels_.begin()->first;
+    }
+    return 0.0;  // No asks available
 }
