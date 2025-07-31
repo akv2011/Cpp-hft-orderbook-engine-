@@ -3,7 +3,6 @@
 #include <iomanip>
 #include <sstream>
 
-// CSV header matching the exact format from sample mbp.csv
 const char* MbpCsvWriter::CSV_HEADER = 
     ",ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,"
     "bid_px_00,bid_sz_00,bid_ct_00,ask_px_00,ask_sz_00,ask_ct_00,"
@@ -38,7 +37,6 @@ bool MbpCsvWriter::initialize() {
         return false;
     }
     
-    // Write CSV header
     appendToBuffer(CSV_HEADER);
     appendToBuffer("\n");
     
@@ -58,7 +56,6 @@ bool MbpCsvWriter::writeSnapshot(const MbpSnapshot& snapshot, uint64_t row_index
     
     snapshot_count_++;
     
-    // Auto-flush if buffer is getting full
     if (write_buffer_.size() > BUFFER_SIZE * 0.8) {
         flushBuffer();
     }
@@ -97,20 +94,16 @@ void MbpCsvWriter::appendToBuffer(const char* data, size_t length) {
 }
 
 std::string MbpCsvWriter::formatTimestamp(const std::chrono::nanoseconds& timestamp) const {
-    // Convert nanoseconds to time_point
     auto time_point = std::chrono::system_clock::time_point(
         std::chrono::duration_cast<std::chrono::system_clock::duration>(timestamp)
     );
     
-    // Get time_t for formatting
     auto time_t_val = std::chrono::system_clock::to_time_t(time_point);
     
-    // Get nanoseconds part
     auto duration_since_epoch = timestamp;
     auto seconds_since_epoch = std::chrono::duration_cast<std::chrono::seconds>(duration_since_epoch);
     auto nanoseconds_part = duration_since_epoch - seconds_since_epoch;
     
-    // Format as ISO 8601: 2025-07-17T08:05:03.360677248Z
     std::ostringstream oss;
     oss << std::put_time(std::gmtime(&time_t_val), "%Y-%m-%dT%H:%M:%S");
     oss << "." << std::setfill('0') << std::setw(9) << nanoseconds_part.count() << "Z";
@@ -125,7 +118,18 @@ std::string MbpCsvWriter::formatPrice(double price) const {
     
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(2) << price;
-    return oss.str();
+    std::string result = oss.str();
+    
+    if (result.find('.') != std::string::npos) {
+        if (result.substr(result.length() - 3) == ".00") {
+            result = result.substr(0, result.length() - 1);
+        }
+        else if (result.back() == '0' && result[result.length()-2] != '.') {
+            result.pop_back();
+        }
+    }
+    
+    return result;
 }
 
 std::string MbpCsvWriter::formatSize(uint64_t size) const {
@@ -145,26 +149,23 @@ std::string MbpCsvWriter::formatCount(uint32_t count) const {
 std::string MbpCsvWriter::buildCsvRow(const MbpSnapshot& snapshot, uint64_t row_index) const {
     std::ostringstream row;
     
-    // Format timestamp for both ts_recv and ts_event
     std::string timestamp_str = formatTimestamp(snapshot.timestamp);
     
-    // Build the row following the exact format from sample mbp.csv
-    row << row_index << ","                           // Row index (first column)
-        << timestamp_str << ","                       // ts_recv
-        << timestamp_str << ","                       // ts_event  
-        << "10,"                                      // rtype (constant 10)
-        << "2,"                                       // publisher_id (constant 2)
-        << "1108,"                                    // instrument_id (constant 1108)
-        << snapshot.action << ","                    // action code from the event
-        << snapshot.side << ","                      // side from snapshot
-        << "0,"                                       // depth (0 for snapshot)
-        << (snapshot.event_price > 0 ? formatPrice(snapshot.event_price) : "") << ","  // price from original event
-        << snapshot.event_size << ","                // size from original event  
-        << static_cast<int>(snapshot.event_flags) << ","  // flags from original event
-        << snapshot.event_ts_in_delta << ","        // ts_in_delta from original event
-        << snapshot.sequence_number << ",";           // sequence from original event
+    row << row_index << ","
+        << timestamp_str << ","
+        << timestamp_str << ","
+        << "10,"
+        << "2,"
+        << "1108,"
+        << snapshot.action << ","
+        << snapshot.side << ","
+        << snapshot.depth << ","
+        << (snapshot.event_price > 0 ? formatPrice(snapshot.event_price) : "") << ","
+        << snapshot.event_size << ","
+        << static_cast<int>(snapshot.event_flags) << ","
+        << snapshot.event_ts_in_delta << ","
+        << snapshot.sequence_number << ",";
     
-    // Add bid levels 00-09 (price, size, count for each level)
     const double* bid_prices = &snapshot.bid_px_00;
     const uint64_t* bid_sizes = &snapshot.bid_sz_00;
     const uint32_t* bid_counts = &snapshot.bid_ct_00;
@@ -173,14 +174,11 @@ std::string MbpCsvWriter::buildCsvRow(const MbpSnapshot& snapshot, uint64_t row_
     const uint64_t* ask_sizes = &snapshot.ask_sz_00;
     const uint32_t* ask_counts = &snapshot.ask_ct_00;
     
-    // Interleave bid and ask levels: bid_px_00, bid_sz_00, bid_ct_00, ask_px_00, ask_sz_00, ask_ct_00, ...
     for (int i = 0; i < 10; ++i) {
-        // Bid level
         row << formatPrice(bid_prices[i]) << ","
             << formatSize(bid_sizes[i]) << ","
             << formatCount(bid_counts[i]) << ",";
             
-        // Ask level
         row << formatPrice(ask_prices[i]) << ","
             << formatSize(ask_sizes[i]) << ","
             << formatCount(ask_counts[i]);
@@ -190,7 +188,6 @@ std::string MbpCsvWriter::buildCsvRow(const MbpSnapshot& snapshot, uint64_t row_
         }
     }
     
-    // Add symbol and order_id 
     row << ",ARL," << snapshot.event_order_id;
     
     return row.str();

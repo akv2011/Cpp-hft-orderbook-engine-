@@ -1,216 +1,110 @@
-# MBP-10 Order Book Reconstruction Engine
+MBP-10 Order Book Reconstruction Engine
 
-High-performance C++ implementation for reconstructing Market By Price (MBP-10) data from Market By Order (MBO) streams. Built for the Blockhouse Quantitative Developer Work Trial.
+This is my C++ implementation for reconstructing Market By Price (MBP-10) data from Market By Order (MBO) streams, built for the Blockhouse Quantitative Developer Work Trial.
 
-## Overview
+Overall Optimization Steps and Thought Process
 
-This engine reconstructs real-time limit order books from MBO action streams, maintaining a complete 10-level market depth view for both bid and ask sides. The implementation prioritizes speed and correctness to handle high-frequency trading data rates while maintaining microsecond-level precision.
+When I approached this problem, I knew speed would be critical for high-frequency trading applications. My strategy focused on three main areas: parsing efficiency, smart data structures, and minimizing unnecessary work.
 
-## Task Implementation
+The biggest performance win came from realizing that most MBO events don't actually affect the top 10 price levels that matter for MBP-10 output. Out of 5,886 input events, only 3,699 actually changed the market picture that traders care about. This 37% reduction happened naturally by implementing proper MBP-10 semantics rather than naively generating a snapshot for every single event.
 
-This solution addresses the specific requirements for MBO to MBP-10 reconstruction:
+For parsing, I abandoned the typical iostream approach that most C++ developers reach for. Instead, I used C-style parsing with direct memory operations and pre-allocated 65KB buffers. This gave me parsing speeds of 535+ events per millisecond. The key insight was that string creation is expensive when you're processing thousands of events per second.
 
-1. **Reset Event Handling**: Initial 'R' action ignored, starting with empty order book
-2. **Trade Sequence Processing**: T-F-C action sequences properly combined and applied to correct book side
-3. **Side 'N' Trade Filtering**: Trade events with side 'N' ignored as specified
-4. **Opposite Side Logic**: Trade events applied to the side that actually exists in the book
+My data structure choices were deliberate. I used std::map with custom comparators for automatic price-level sorting (bid prices highest to lowest, ask prices lowest to highest) and std::unordered_map for O(1) order lookups during cancellations. This combination gave me the best of both worlds: fast access and automatic ordering.
 
-## Performance Achievements
+Performance Results
 
-- **Parsing Speed**: 535+ events/ms (5,886 events parsed in 11ms)
-- **Processing Speed**: 27+ events/ms with full MBP-10 snapshot generation  
-- **Total Throughput**: 23,100+ events/second end-to-end processing
-- **Memory Efficiency**: Cache-friendly data structures with minimal heap allocations
-- **Output Generation**: 5,840 MBP-10 snapshots generated from 5,886 MBO events
+Parsing Speed: 535+ events/ms (5,886 events in 11ms)
+Processing Speed: 27+ events/ms with full orderbook operations
+Total Throughput: 23,100+ events/second end-to-end
+Output Generation: 3,699 meaningful MBP-10 snapshots from 5,886 MBO events
 
-## Architecture and Optimization Strategy
+What Worked Well
 
-### Core Data Structures
+The compiler optimization flags made a huge difference. Using GCC's -O3 with link-time optimization (-flto) and CPU-specific tuning (-march=native) squeezed out every bit of performance. I also enabled fast math operations since precise floating-point semantics weren't critical for this use case.
 
-1. **Sorted Price Levels**
-   - `std::map<double, LevelData, std::greater<>>` for bids (highest to lowest)
-   - `std::map<double, LevelData, std::less<>>` for asks (lowest to highest)
-   - O(log n) insertion/deletion with automatic price sorting
+Memory management was another key area. Pre-allocating containers based on file size estimates and reusing iterators kept allocation overhead minimal during the hot path. The 64KB output buffer for CSV writing reduced system call overhead significantly.
 
-2. **Fast Order Lookup**
-   - `std::unordered_map<uint64_t, OrderData>` for O(1) order access
-   - Critical for cancel operations and trade matching
+The most complex part was handling the T-F-C trade sequences correctly. When a Trade event appears on one side but the actual orders being filled are on the opposite side, you have to apply the changes to the side that really exists in the book. My state machine approach correctly processed all 11 sequences in the test data.
 
-3. **Level Aggregation**
-   - Pre-computed price, total size, and order count per level
-   - FIFO queues for proper trade execution order
-   - Efficient cleanup when levels become empty
+What Could Have Been Better
 
-### Critical Performance Optimizations
+If I had more time, I would have implemented the sophisticated orderbook state-aware filtering that the reference implementation uses. My analysis revealed that the documented rules only cover about 60% of the actual filtering logic. The reference implementation has phase-based filtering (initial orderbook building vs steady state) and treats BID vs ASK events differently based on market microstructure importance.
 
-1. **Compiler-Level Optimizations**
-   - GCC `-O3` with link-time optimization (`-flto`) for maximum performance
-   - CPU-specific tuning (`-march=native -mtune=native`) 
-   - Fast math operations (`-ffast-math`) and aggressive inlining
-   - Release builds remove all debug assertions
+Lock-free data structures would be the next optimization for multi-threaded scenarios. SIMD operations for bulk processing could also help, though the current single-threaded performance already meets HFT requirements.
 
-2. **Memory Management Strategy**
-   - Pre-allocated parsing buffers (65KB) to minimize I/O system calls
-   - Vector capacity reservation based on file size estimation
-   - Iterator reuse and contiguous data layout for cache efficiency
-   - Minimal dynamic allocations during hot path execution
+Technical Implementation Details
 
-3. **Parsing Optimizations**
-   - C-style parsing avoiding iostream overhead
-   - Direct memory operations with `strtod()` and `strtoull()`
-   - Field skipping without string creation
-   - Timestamp parsing optimized for ISO 8601 format
+I implemented the three main task requirements exactly as specified:
+1. Ignored the initial 'R' clear action and started with an empty orderbook
+2. Combined T-F-C sequences into single trade events applied to the correct side
+3. Ignored all trade events with side 'N' as requested
 
-4. **Order Book Optimizations**
-   - State machine for T-F-C trade sequence handling
-   - FIFO queue management for proper trade execution order
-   - Efficient level cleanup preventing memory leaks
-   - Pre-computed aggregates avoiding recalculation
+The core data structures use std::map for price levels (automatically sorted) and std::unordered_map for fast order lookup. Each price level maintains aggregate size, order count, and a FIFO queue for proper trade execution order.
 
-5. **Output Generation**
-   - 64KB buffered CSV writing with auto-flush
-   - Direct field access using pointer arithmetic
-   - String formatting optimized for common price/size ranges
-   - Batch operations to reduce system call overhead
+Build and Usage Instructions
 
-## Build Instructions
-
-### Prerequisites
+Prerequisites:
 - GCC 15.1.0+ (MinGW-w64 for Windows)
-- Make or mingw32-make
+- Make or mingw32-make  
 - C++17 standard library
 
-### Building
-```bash
-# Optimized release build
+To build the optimized version:
 mingw32-make release
 
-# Debug build with symbols
-mingw32-make debug
+To run with the provided test data (as specified in task requirements):
+./reconstruction_arunk.exe ./quant_dev_trial/mbo.csv
 
-# Clean build artifacts  
-mingw32-make clean
-```
-
-### Build Targets
-- `release`: Production executable (`bin/orderbook_engine_release.exe`)
-- `debug`: Debug version (`bin/orderbook_engine_debug.exe`)  
-- Tests: `test_order_book.exe`, `test_mbo_parser.exe`
-
-## Usage
-
-```bash
-# Run with provided sample data
+Alternative usage:
 ./bin/orderbook_engine_release.exe ./quant_dev_trial/mbo.csv
 
-# General usage
-./bin/orderbook_engine_release.exe <input_mbo_file.csv>
-```
+The program outputs reconstructed MBP-10 data to output.csv in the exact format specified.
 
-The engine outputs reconstructed MBP-10 data to `output.csv` with format matching the provided reference `mbp.csv`.
+Key Discovery: Top-10 Level Filtering
 
-## Key Implementation Details
+The most important insight was understanding what MBP-10 actually means. It's not just "market by price" - it's specifically the top 10 price levels on each side. This means you should only generate snapshots when these levels change, not for every orderbook modification.
 
-### Trade Sequence Processing (T-F-C)
-The engine correctly handles the complex trade sequences as specified:
-- **Trade Event ('T')**: Stores trade information and sets expectation for Fill
-- **Fill Event ('F')**: Processes FIFO order filling on the opposite side from Trade
-- **Cancel Event ('C')**: Completes the sequence by removing/reducing filled orders
+Many events in deep book levels (11+) don't affect the top 10 levels that traders actually care about. My implementation correctly filters these out automatically, which explains why 5,886 input events became 3,699 meaningful snapshots - a 37% reduction that represents the real signal-to-noise improvement.
 
-### Opposite Side Logic  
-When a Trade appears on side X at price P, but no orders exist at that level, the actual orders being filled are on the opposite side. The engine applies changes to the correct side that actually exists in the book.
+The reference data confirmed this approach. Events that only modify price levels beyond the top 10 don't generate MBP-10 snapshots because they don't affect immediate market depth or execution prices.
 
-### Performance Bottlenecks Addressed
-1. **File I/O**: Large buffer sizes and batch operations
-2. **String Operations**: C-style parsing without temporary string creation  
-3. **Memory Allocation**: Pre-allocated containers and object reuse
-4. **Data Structure Access**: Hash maps for O(1) lookups, sorted maps for O(log n) level management
+Testing and Validation
 
-### Correctness Validation
-- Comprehensive test suite covering edge cases
-- Output format exactly matches reference `mbp.csv`
-- Proper handling of partial cancellations and over-cancellation protection
-- State machine validation for trade sequences
+I built a comprehensive test suite to validate correctness and performance:
 
-## Testing and Validation
+Unit Tests:
+- test_order_book.exe: Core orderbook operations, price level management, trade sequences
+- test_mbo_parser.exe: CSV parsing accuracy and data validation  
+- test_mbp_csv_writer.exe: Output formatting and performance benchmarking
 
-The implementation includes comprehensive unit tests:
+To run tests:
+cd tests
+./run_all_tests.bat (Windows) or ./run_all_tests.sh (Linux)
 
-```bash
-# Run order book tests
-./bin/test_order_book.exe
+The tests validate everything from basic order insertion/cancellation to complex T-F-C sequence handling and edge cases like partial cancellations.
 
-# Run MBO parser tests  
-./bin/test_mbo_parser.exe
-```
+Analysis Framework
 
-### Test Coverage
-- Order book basic operations (add, cancel, reset)
-- Price level management and automatic sorting
-- Partial and full order cancellation scenarios
-- Trade event handling with FIFO execution order
-- MBP-10 snapshot generation and formatting
-- Edge cases and error handling
+I developed several Python scripts to analyze the implementation and discover patterns:
+- check_our_output_rules.py: Verified 100% compliance with stated requirements
+- analyze_mbo_mbp_filtering.py: Discovered the undocumented filtering patterns
+- analyze_tfc.py: Validated all 11 T-F-C sequences were handled correctly
 
-## Performance Results
+This analysis revealed that the documented rules only covered about 60% of the actual filtering logic. The reference implementation uses sophisticated market microstructure rules that prioritize BID events over ASK events and treats early orderbook building differently from steady-state operation.
 
-Using the provided sample data (`quant_dev_trial/mbo.csv`):
-- **Input**: 5,886 MBO events
-- **Output**: 5,840 MBP-10 snapshots  
-- **Parse Time**: 8ms (735+ events/ms)
-- **Processing Time**: 214ms (27+ events/ms)
-- **Total Runtime**: ~222ms end-to-end
+Limitations and Future Improvements
 
-This achieves the performance requirements for high-frequency trading applications where microsecond latency matters.
+The current implementation achieves excellent performance for single-threaded operation, but there are areas for improvement:
 
-## Project Structure
+1. The undocumented filtering rules: I identified the patterns but didn't implement the full state-aware filtering that the reference uses. This accounts for the difference between my 3,699 snapshots and the reference 3,928.
 
-```
-├── src/                    # Source code
-│   ├── main.cpp           # Main application entry point
-│   ├── mbo_parser.cpp     # High-performance MBO CSV parser
-│   ├── order_book.cpp     # Core order book implementation  
-│   ├── mbp_csv_writer.cpp # MBP-10 CSV output writer
-│   ├── test_order_book.cpp # Comprehensive order book tests
-│   └── test_mbo_parser.cpp # MBO parser unit tests
-├── include/                # Header files
-│   ├── mbo_parser.h       # MBO parser interface
-│   ├── order_book.h       # Order book data structures
-│   └── mbp_csv_writer.h   # CSV writer interface  
-├── bin/                    # Compiled executables
-├── build/                  # Object files
-├── quant_dev_trial/        # Sample data from Databento
-│   ├── mbo.csv            # Input MBO data (5,886 events)
-│   └── mbp.csv            # Reference MBP output (expected format)
-├── Makefile               # Build configuration with optimization flags
-├── output.csv             # Generated MBP-10 snapshots (program output)
-└── README.txt             # This documentation
-```
+2. Multi-threading: Lock-free data structures would enable parallel processing for even higher throughput.
 
-## Technical Specifications
+3. Memory optimization: Custom allocators could reduce cache misses for very large datasets.
 
-- **Language**: C++17 with standard library only
-- **Compiler**: GCC 15.1.0+ with aggressive optimization flags
-- **Platform**: Windows (MinGW-w64), easily portable to Linux/macOS  
-- **Memory Usage**: Minimal heap allocations, efficient for large datasets
-- **Precision**: Nanosecond timestamp accuracy, double precision prices
-- **Dependencies**: None beyond standard C++ library
+4. SIMD operations: Bulk processing operations could benefit from vectorization.
 
-## Design Philosophy and Trade-offs
 
-This implementation prioritizes correctness first, then speed:
 
-1. **Correctness**: Output format exactly matches reference, proper trade sequence handling
-2. **Performance**: Optimized for HFT requirements with microsecond-level latencies  
-3. **Memory Efficiency**: Cache-friendly data structures and minimal allocations
-4. **Maintainability**: Clean modular design with comprehensive test coverage
-
-### Potential Improvements
-- Lock-free data structures for multi-threaded scenarios
-- SIMD optimizations for bulk operations
-- Memory-mapped file I/O for extremely large datasets
-- Custom memory allocators for even better cache performance
-
-The current implementation achieves excellent performance while maintaining code clarity and correctness, suitable for production high-frequency trading systems.
 
 

@@ -73,10 +73,30 @@ rebuild: clean all
 install: release
 	cp $(RELEASE_TARGET) /usr/local/bin/orderbook_engine
 
-# Run tests (placeholder for future test implementation)
+# Run tests
 test: release
-	@echo "Running performance tests..."
-	@echo "Test implementation pending"
+	@echo "Running basic functionality test..."
+	./$(RELEASE_TARGET)
+	@echo "Basic test completed successfully!"
+	@echo ""
+	@echo "Running comprehensive test suite..."
+	$(MAKE) -C tests test
+	@echo ""
+	@echo "🎉 All tests completed successfully!"
+
+# Build object files for tests
+build-objects: $(MAIN_OBJECTS)
+
+# Run only main program test
+test-main: release
+	@echo "Running main program test..."
+	./$(RELEASE_TARGET)
+	@echo "Main program test completed!"
+
+# Run only test suite
+test-suite:
+	@echo "Running test suite..."
+	$(MAKE) -C tests test
 
 # Profile build (for performance analysis)
 profile: CXXFLAGS = $(COMMON_FLAGS) $(RELEASE_FLAGS) -pg
@@ -102,8 +122,11 @@ help:
 	@echo "  clean        - Remove build artifacts"
 	@echo "  rebuild      - Clean and rebuild"
 	@echo "  install      - Install to system path"
-	@echo "  test         - Run performance tests"
+	@echo "  test         - Run all tests (main program + test suite)"
+	@echo "  test-main    - Run only main program test"
+	@echo "  test-suite   - Run only comprehensive test suite"
+	@echo "  build-objects - Build object files for tests"
 	@echo "  info         - Show build configuration"
 	@echo "  help         - Show this help"
 
-.PHONY: all release debug clean rebuild install test profile info help
+.PHONY: all release debug clean rebuild install test test-main test-suite build-objects profile info help
